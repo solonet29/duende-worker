@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { GoogleGenerativeAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { MongoClient } from 'mongodb';
 import cron from 'node-cron';
 
