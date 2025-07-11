@@ -76,3 +76,5 @@ try {
   console.error("💥 ERROR FATAL DURANTE LA INICIALIZACIÓN 💥:", error.message);
   process.exit(1);
 }
+// Forzando un nuevo despliegue para actualizar el comando
+import 'dotenv/config';
