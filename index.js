@@ -10,38 +10,10 @@ const mongoClient = new MongoClient(MONGO_URI, { autoSelectFamily: false });
 
 // 1. EL CORAZÓN DE NUESTRO WORKER: TU LISTA DE ARTISTAS
 // A partir de ahora, todas las búsquedas se basarán en esta lista.
+// Dejamos solo un artista para una prueba segura
 const ARTIST_LIST = [
-    "Eva Yerbabuena",
-    "Marina Heredia",
-    "Estrella Morente",
-    "Sara Baras",
-    "Argentina",
-    "Rocío Márquez",
-    "María Terremoto",
-    "María Canea",
-    "Farruquito",
-    "Pedro El Granaíno",
-    "Miguel Poveda",
-    "Antonio Reyes",
-    "Rancapino Chico",
-    "Jesús Méndez",
-    "Arcángel",
-    "Jeromo Segura",
-    "El Torombo",
-    "Rafael Riqueni",
-    "Israel Fernández",
-    "Pepe Torres",
-    "Israel Galván",
-    "David Palomar",
-    "Antonio 'El Farru'",
-    "Juan Carlos Romero",
-    "Antonio Rey",
-    "Tomatito",
-    "Moraíto Chico", // Nota: Fallecido, pero puede haber homenajes.
-    "José Mercé",
-    "Patricia Guerrero"
+    "Pedro El Granaíno"
 ];
-
 // 2. PROMPT ADAPTADO A LA BÚSQUEDA POR ARTISTA
 const eventPromptTemplate = (artistName) => `Busca conciertos, recitales o actuaciones importantes del artista de flamenco "${artistName}" para los próximos 12 meses en Europa. Devuelve el resultado como un array JSON. Prioriza eventos en teatros, auditorios y festivales. Si no encuentras ningún evento futuro para este artista, es MUY IMPORTANTE que devuelvas un array JSON vacío, es decir, '[]'. No devuelvas frases explicativas. La estructura por evento debe ser: { "id": "slug-unico-y-descriptivo", "name": "...", "artist": "${artistName}", "description": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "...", "city": "...", "country": "...", "verified": boolean }`;
 
