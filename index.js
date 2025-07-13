@@ -8,42 +8,68 @@ const { GEMINI_API_KEY, MONGO_URI } = process.env;
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const mongoClient = new MongoClient(MONGO_URI, { autoSelectFamily: false });
 
-// 1. EL CORAZÓN DE NUESTRO WORKER: TU LISTA DE ARTISTAS
-// A partir de ahora, todas las búsquedas se basarán en esta lista.
-// Dejamos solo un artista para una prueba segura
 const ARTIST_LIST = [
-    "Pedro El Granaíno"
+    "Eva Yerbabuena", "Marina Heredia", "Estrella Morente", "Sara Baras", "Argentina",
+    "Rocío Márquez", "María Terremoto", "María Canea", "Farruquito", "Pedro El Granaíno",
+    "Miguel Poveda", "Antonio Reyes", "Rancapino Chico", "Jesús Méndez", "Arcángel",
+    "Jeromo Segura", "El Torombo", "Rafael Riqueni", "Israel Fernández", "Pepe Torres",
+    "Israel Galván", "David Palomar", "Antonio 'El Farru'", "Juan Carlos Romero",
+    "Antonio Rey", "Tomatito", "Moraíto Chico", "José Mercé", "Patricia Guerrero"
 ];
-// 2. PROMPT ADAPTADO A LA BÚSQUEDA POR ARTISTA
-const eventPromptTemplate = (artistName) => `Busca conciertos, recitales o actuaciones importantes del artista de flamenco "${artistName}" para los próximos 12 meses en Europa. Devuelve el resultado como un array JSON. Prioriza eventos en teatros, auditorios y festivales. Si no encuentras ningún evento futuro para este artista, es MUY IMPORTANTE que devuelvas un array JSON vacío, es decir, '[]'. No devuelvas frases explicativas. La estructura por evento debe ser: { "id": "slug-unico-y-descriptivo", "name": "...", "artist": "${artistName}", "description": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "...", "city": "...", "country": "...", "verified": boolean }`;
 
-// Función para pausas
+// 1. PROMPT REFINADO CON LA TÉCNICA DEL EJEMPLO ("ONE-SHOT")
+// Le mostramos a la IA exactamente cómo debe responder en ambos casos: cuando encuentra algo y cuando no.
+const eventPromptTemplate = (artistName) => `
+Tu tarea es actuar como un experto en flamenco y buscar eventos futuros del artista proporcionado. Tu respuesta DEBE ser exclusivamente un array JSON.
+
+EJEMPLO DE RESPUESTA SI ENCUENTRAS EVENTOS:
+[
+  {
+    "id": "ejemplo-artista-ciudad-2025-10-26",
+    "name": "Ejemplo de Concierto",
+    "artist": "Artista Ejemplo",
+    "description": "Descripción del concierto de ejemplo.",
+    "date": "2025-10-26",
+    "time": "21:00",
+    "venue": "Teatro Ejemplo",
+    "city": "Ciudad Ejemplo",
+    "country": "País Ejemplo",
+    "verified": true
+  }
+]
+
+EJEMPLO DE RESPUESTA SI NO ENCUENTRAS NINGÚN EVENTO:
+[]
+
+BAJO NINGUNA CIRCUNSTANCIA respondas con texto normal o explicaciones. Solo el array JSON.
+
+Ahora, por favor, proporciona la información para el siguiente artista: "${artistName}"
+`;
+
+
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fetchAndSaveEvents() {
-    console.log("Iniciando ciclo de búsqueda de conciertos por ARTISTA...");
+    console.log("Iniciando ciclo de búsqueda con PROMPT MEJORADO...");
     
     try {
+        const model = genAI.getGenerativeModel({
+            model: "gemini-1.5-flash",
+            generationConfig: { responseMimeType: "application/json" },
+        });
+
         await mongoClient.connect();
         console.log("✅ Conexión a MongoDB establecida.");
         const db = mongoClient.db("DuendeDB");
         const eventsCollection = db.collection("events");
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-        // 3. EL BUCLE AHORA RECORRE LA LISTA DE ARTISTAS
         for (const artist of ARTIST_LIST) {
             try {
                 console.log(`Buscando conciertos para: "${artist}"...`);
                 const result = await model.generateContent(eventPromptTemplate(artist));
                 const response = await result.response;
-                let textResponse = response.text().trim();
-
-                if (!textResponse.startsWith('[') && !textResponse.startsWith('{')) {
-                  console.log(`❕ La respuesta para "${artist}" no es un JSON. Omitiendo.`);
-                  continue; 
-                }
+                const textResponse = response.text();
                 
-                textResponse = textResponse.replace(/^```json\s*/, '').replace(/\s*```$/, '');
                 const events = JSON.parse(textResponse);
                 
                 if (Array.isArray(events) && events.length > 0) {
@@ -55,10 +81,11 @@ async function fetchAndSaveEvents() {
                     console.log(`ℹ️ No se encontraron nuevos conciertos para "${artist}".`);
                 }
             } catch (error) {
+                // Ahora que forzamos JSON, un error de parseo es menos probable, pero lo mantenemos.
                 console.error(`❌ Error procesando la búsqueda para "${artist}":`, error.message);
             } finally {
-                console.log("Pausando por 30 segundos para no superar la cuota...");
-                await delay(30000); // Aumentamos la pausa a 30 segundos para mayor seguridad
+                console.log("Pausando por 30 segundos...");
+                await delay(30000); 
             }
         }
 
@@ -70,13 +97,7 @@ async function fetchAndSaveEvents() {
     }
 }
 
-// --- EJECUCIÓN PROGRAMADA Y PRUEBA INICIAL ---
-cron.schedule('0 3 * * *', () => {
-    fetchAndSaveEvents();
-}, {
-    scheduled: true,
-    timezone: "Europe/Madrid"
-});
+cron.schedule('0 3 * * *', () => { fetchAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker por ARTISTAS iniciado. Ejecutando una vez para la prueba inicial...");
+console.log("Worker con PROMPT MEJORADO iniciado. Ejecutando una vez para la prueba...");
 fetchAndSaveEvents();
