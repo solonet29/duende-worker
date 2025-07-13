@@ -1,6 +1,5 @@
 import 'dotenv/config';
-// 1. IMPORTAMOS LAS HERRAMIENTAS NECESARIAS
-import { GoogleGenerativeAI, GoogleSearchRetriever } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { MongoClient } from 'mongodb';
 import cron from 'node-cron';
 
@@ -9,28 +8,22 @@ const { GEMINI_API_KEY, MONGO_URI } = process.env;
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const mongoClient = new MongoClient(MONGO_URI, { autoSelectFamily: false });
 
-// 2. CREAMOS LA HERRAMIENTA DE BÚSQUEDA
-const searchTool = new GoogleSearchRetriever();
-
 const ARTIST_LIST = [
     "Eva Yerbabuena", "Marina Heredia", "Estrella Morente", "Sara Baras", "Argentina",
     "Rocío Márquez", "María Terremoto", "Farruquito", "Pedro El Granaíno", "Miguel Poveda",
     "Antonio Reyes", "Rancapino Chico", "Jesús Méndez", "Arcángel", "Israel Fernández"
-]; // He acortado la lista para que las pruebas sean más rápidas
+];
 
-const eventPromptTemplate = (artistName) => `Usando tus herramientas de búsqueda si es necesario, busca conciertos, recitales o actuaciones importantes del artista de flamenco "${artistName}" para los próximos 12 meses en Europa. Devuelve el resultado como un array JSON. Prioriza eventos en teatros, auditorios y festivales importantes. Si, incluso después de buscar, no encuentras ningún evento futuro para este artista, devuelve un array JSON vacío, es decir, '[]'. La estructura por evento debe ser: { "id": "slug-unico-y-descriptivo", "name": "...", "artist": "${artistName}", "description": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "...", "city": "...", "country": "...", "verified": boolean }`;
+const eventPromptTemplate = (artistName) => `Actúa como un agente de booking experto en flamenco. Tu única tarea es buscar en tu base de conocimiento eventos futuros (conciertos, recitales, festivales) del artista "${artistName}" en Europa. Tu respuesta debe ser obligatoriamente un array en formato JSON. Si encuentras eventos, inclúyelos en el array. Si no encuentras absolutamente ningún evento futuro y verificable, devuelve un array JSON vacío: []. No incluyas texto, explicaciones o disculpas, solo el array JSON. La estructura para cada evento es: { "id": "slug-unico", "name": "...", "artist": "${artistName}", "description": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "...", "city": "...", "country": "...", "verified": boolean }`;
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fetchAndSaveEvents() {
-    console.log("Iniciando ciclo de búsqueda con GOOGLE SEARCH...");
+    console.log("Iniciando ciclo de búsqueda (versión simplificada y robusta)...");
     
     try {
-        // 3. INICIALIZAMOS EL MODELO CON LA HERRAMIENTA DE BÚSQUEDA
-        const model = genAI.getGenerativeModel({
-            model: "gemini-1.5-pro", // Usamos el modelo Pro, que funciona mejor con herramientas
-            tools: [searchTool],
-        });
+        // Usamos el modelo PRO, que es más potente.
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
 
         await mongoClient.connect();
         console.log("✅ Conexión a MongoDB establecida.");
@@ -40,20 +33,13 @@ async function fetchAndSaveEvents() {
         for (const artist of ARTIST_LIST) {
             try {
                 console.log(`Buscando conciertos para: "${artist}"...`);
-                // La llamada a generateContent no cambia
                 const result = await model.generateContent(eventPromptTemplate(artist));
                 const response = await result.response;
                 
-                // La respuesta ahora puede ser más compleja, la parseamos con cuidado
-                if (response.functionCalls) {
-                    // Si la IA usó una herramienta, aquí procesaríamos la respuesta.
-                    // Para este caso, el modelo integra la búsqueda automáticamente.
-                }
-                
-                const textResponse = response.text().trim().replace(/^```json\s*/, '').replace(/\s*```$/, '');
+                const textResponse = response.text().trim();
 
                 if (!textResponse.startsWith('[') && !textResponse.startsWith('{')) {
-                  console.log(`❕ La respuesta para "${artist}" no es un JSON. Omitiendo.`);
+                  console.log(`❕ La respuesta para "${artist}" no es un JSON. Omitiendo. Respuesta: "${textResponse}"`);
                   continue; 
                 }
 
@@ -74,7 +60,6 @@ async function fetchAndSaveEvents() {
                 await delay(30000); 
             }
         }
-
     } catch (error) {
         console.error("💥 ERROR FATAL en el worker: ", error);
     } finally {
@@ -86,5 +71,5 @@ async function fetchAndSaveEvents() {
 // --- EJECUCIÓN ---
 cron.schedule('0 3 * * *', () => { fetchAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker con GOOGLE SEARCH iniciado. Ejecutando una vez para la prueba...");
+console.log("Worker (versión PRO) iniciado. Ejecutando una vez para la prueba...");
 fetchAndSaveEvents();
