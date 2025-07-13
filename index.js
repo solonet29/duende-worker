@@ -8,23 +8,48 @@ const { GEMINI_API_KEY, MONGO_URI } = process.env;
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const mongoClient = new MongoClient(MONGO_URI, { autoSelectFamily: false });
 
-const BATCH_OF_QUERIES = [
-  "conciertos guitarra flamenca España",
-  "gira Miguel Poveda",
-  "conciertos de cante jondo",
-  "festivales de verano flamenco 2025",
-  "Israel Fernández conciertos",
-  "Vicente Sordera 'El Sordera' recitales"
+// 1. EL CORAZÓN DE NUESTRO WORKER: TU LISTA DE ARTISTAS
+// A partir de ahora, todas las búsquedas se basarán en esta lista.
+const ARTIST_LIST = [
+    "Eva Yerbabuena",
+    "Marina Heredia",
+    "Estrella Morente",
+    "Sara Baras",
+    "Argentina",
+    "Rocío Márquez",
+    "María Terremoto",
+    "María Canea",
+    "Farruquito",
+    "Pedro El Granaíno",
+    "Miguel Poveda",
+    "Antonio Reyes",
+    "Rancapino Chico",
+    "Jesús Méndez",
+    "Arcángel",
+    "Jeromo Segura",
+    "El Torombo",
+    "Rafael Riqueni",
+    "Israel Fernández",
+    "Pepe Torres",
+    "Israel Galván",
+    "David Palomar",
+    "Antonio 'El Farru'",
+    "Juan Carlos Romero",
+    "Antonio Rey",
+    "Tomatito",
+    "Moraíto Chico", // Nota: Fallecido, pero puede haber homenajes.
+    "José Mercé",
+    "Patricia Guerrero"
 ];
 
-// 1. MEJORA EN EL PROMPT: Le damos instrucciones explícitas sobre qué hacer si no encuentra nada.
-const eventPromptTemplate = (query) => `Busca CONCIERTOS y RECITALES de flamenco futuros y verificables en Europa sobre "${query}" y devuelve el resultado como un array JSON. Prioriza eventos en teatros, auditorios y festivales importantes. La estructura por evento debe ser: { "id": "slug-unico-y-descriptivo", "name": "...", "artist": "...", "description": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "...", "city": "...", "country": "...", "verified": boolean }. Si no encuentras ningún evento que coincida con la búsqueda, es MUY IMPORTANTE que devuelvas un array JSON vacío, es decir, '[]'. No devuelvas frases explicativas.`;
+// 2. PROMPT ADAPTADO A LA BÚSQUEDA POR ARTISTA
+const eventPromptTemplate = (artistName) => `Busca conciertos, recitales o actuaciones importantes del artista de flamenco "${artistName}" para los próximos 12 meses en Europa. Devuelve el resultado como un array JSON. Prioriza eventos en teatros, auditorios y festivales. Si no encuentras ningún evento futuro para este artista, es MUY IMPORTANTE que devuelvas un array JSON vacío, es decir, '[]'. No devuelvas frases explicativas. La estructura por evento debe ser: { "id": "slug-unico-y-descriptivo", "name": "...", "artist": "${artistName}", "description": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "...", "city": "...", "country": "...", "verified": boolean }`;
 
 // Función para pausas
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fetchAndSaveEvents() {
-    console.log("Iniciando ciclo de búsqueda de conciertos MEJORADO...");
+    console.log("Iniciando ciclo de búsqueda de conciertos por ARTISTA...");
     
     try {
         await mongoClient.connect();
@@ -33,40 +58,35 @@ async function fetchAndSaveEvents() {
         const eventsCollection = db.collection("events");
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-        for (const query of BATCH_OF_QUERIES) {
+        // 3. EL BUCLE AHORA RECORRE LA LISTA DE ARTISTAS
+        for (const artist of ARTIST_LIST) {
             try {
-                console.log(`Buscando conciertos para: "${query}"...`);
-                const result = await model.generateContent(eventPromptTemplate(query));
+                console.log(`Buscando conciertos para: "${artist}"...`);
+                const result = await model.generateContent(eventPromptTemplate(artist));
                 const response = await result.response;
                 let textResponse = response.text().trim();
 
-                // 2. MEJORA EN EL CÓDIGO: Añadimos una salvaguarda.
-                // Antes de intentar interpretar el texto, nos aseguramos de que parece un JSON.
                 if (!textResponse.startsWith('[') && !textResponse.startsWith('{')) {
-                  console.log(`❕ La respuesta para "${query}" no es un JSON. Omitiendo. Respuesta recibida: "${textResponse}"`);
-                  // Saltamos al siguiente elemento del bucle sin hacer nada más.
+                  console.log(`❕ La respuesta para "${artist}" no es un JSON. Omitiendo.`);
                   continue; 
                 }
                 
-                // Limpiamos los ```json que a veces añade la IA
                 textResponse = textResponse.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-                
                 const events = JSON.parse(textResponse);
                 
-                // Comprobamos que es un array y tiene contenido antes de seguir
                 if (Array.isArray(events) && events.length > 0) {
                     for (const event of events) {
                         await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
                     }
-                    console.log(`👍 Se procesaron ${events.length} conciertos para "${query}".`);
+                    console.log(`👍 Se procesaron ${events.length} conciertos para "${artist}".`);
                 } else {
-                    console.log(`ℹ️ No se encontraron nuevos conciertos para "${query}".`);
+                    console.log(`ℹ️ No se encontraron nuevos conciertos para "${artist}".`);
                 }
             } catch (error) {
-                console.error(`❌ Error procesando la búsqueda "${query}":`, error.message);
+                console.error(`❌ Error procesando la búsqueda para "${artist}":`, error.message);
             } finally {
-                console.log("Pausando por 25 segundos...");
-                await delay(25000); 
+                console.log("Pausando por 30 segundos para no superar la cuota...");
+                await delay(30000); // Aumentamos la pausa a 30 segundos para mayor seguridad
             }
         }
 
@@ -78,7 +98,7 @@ async function fetchAndSaveEvents() {
     }
 }
 
-// --- EJECUCIÓN ---
+// --- EJECUCIÓN PROGRAMADA Y PRUEBA INICIAL ---
 cron.schedule('0 3 * * *', () => {
     fetchAndSaveEvents();
 }, {
@@ -86,6 +106,5 @@ cron.schedule('0 3 * * *', () => {
     timezone: "Europe/Madrid"
 });
 
-console.log("Worker MEJORADO iniciado. Esperando a la próxima ejecución programada (3 AM).");
-console.log("Ejecutando una vez ahora para la prueba inicial...");
+console.log("Worker por ARTISTAS iniciado. Ejecutando una vez para la prueba inicial...");
 fetchAndSaveEvents();
