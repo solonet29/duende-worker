@@ -19,10 +19,9 @@ const eventPromptTemplate = (artistName) => `Actúa como un agente de booking ex
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fetchAndSaveEvents() {
-    console.log("Iniciando ciclo de búsqueda (versión simplificada y robusta)...");
+    console.log("Iniciando ciclo de búsqueda con FILTRO DE FECHA...");
     
     try {
-        // Usamos el modelo PRO, que es más potente.
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
 
         await mongoClient.connect();
@@ -35,21 +34,38 @@ async function fetchAndSaveEvents() {
                 console.log(`Buscando conciertos para: "${artist}"...`);
                 const result = await model.generateContent(eventPromptTemplate(artist));
                 const response = await result.response;
-                
                 const textResponse = response.text().trim();
 
                 if (!textResponse.startsWith('[') && !textResponse.startsWith('{')) {
-                  console.log(`❕ La respuesta para "${artist}" no es un JSON. Omitiendo. Respuesta: "${textResponse}"`);
+                  console.log(`❕ La respuesta para "${artist}" no es un JSON. Omitiendo.`);
                   continue; 
                 }
 
-                const events = JSON.parse(textResponse);
+                let events = JSON.parse(textResponse);
                 
                 if (Array.isArray(events) && events.length > 0) {
-                    for (const event of events) {
-                        await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
+                    
+                    // --- ¡AQUÍ ESTÁ LA MEJORA! ---
+                    // 1. Obtenemos la fecha de hoy (sin la hora, para comparar solo el día)
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0); 
+
+                    // 2. Filtramos el array de eventos para quedarnos solo con los futuros
+                    const futureEvents = events.filter(event => {
+                        const eventDate = new Date(event.date);
+                        return eventDate >= today;
+                    });
+                    // --- FIN DE LA MEJORA ---
+
+                    if (futureEvents.length > 0) {
+                        for (const event of futureEvents) {
+                            await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
+                        }
+                        console.log(`👍 Se procesaron y guardaron ${futureEvents.length} conciertos futuros para "${artist}".`);
+                    } else {
+                        console.log(`ℹ️ La IA devolvió eventos, pero todos eran pasados. No se guardó nada para "${artist}".`);
                     }
-                    console.log(`👍 Se procesaron ${events.length} conciertos para "${artist}".`);
+
                 } else {
                     console.log(`ℹ️ No se encontraron nuevos conciertos para "${artist}".`);
                 }
@@ -71,5 +87,5 @@ async function fetchAndSaveEvents() {
 // --- EJECUCIÓN ---
 cron.schedule('0 3 * * *', () => { fetchAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker (versión PRO) iniciado. Ejecutando una vez para la prueba...");
+console.log("Worker con FILTRO DE FECHA iniciado. Ejecutando una vez para la prueba...");
 fetchAndSaveEvents();
