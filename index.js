@@ -14,23 +14,10 @@ const ARTIST_LIST = [
     "Antonio Reyes", "Rancapino Chico", "Jesús Méndez", "Arcángel", "Israel Fernández"
 ];
 
-// --- ¡AQUÍ ESTÁ LA MEJORA! ---
-// Hemos añadido búsquedas específicas para ciudades europeas clave.
 const GENERAL_QUERIES = [
-    "espectáculos de flamenco en tablaos de Madrid",
-    "programación de flamenco en teatros de Barcelona",
-    "noches de flamenco en cuevas del Sacromonte Granada",
-    "festivales de flamenco en Andalucía verano 2025",
-    "conciertos de guitarra flamenca en Jerez",
-    "espectáculos de flamenco en tablaos de sevilla",
-    "espectáculos de flamenco en peñas flamencas",
-
-    // NUEVAS BÚSQUEDAS EUROPEAS
-    "espectáculo flamenco en París",
-    "conciertos de flamenco en Londres",
-    "noches de flamenco en Lisboa",
-    "festival de flamenco de Nîmes 2025",
-    "gira flamenca en Berlín"
+    "espectáculos de flamenco en tablaos de Madrid", "programación de flamenco en teatros de Barcelona",
+    "noches de flamenco en cuevas del Sacromonte Granada", "festivales de flamenco en Andalucía verano 2025",
+    "conciertos de guitarra flamenca en Jerez", "espectáculo flamenco en París", "conciertos de flamenco en Londres"
 ];
 
 const ALL_QUERIES = [...ARTIST_LIST, ...GENERAL_QUERIES];
@@ -40,7 +27,7 @@ const eventPromptTemplate = (query) => `Actúa como un agente de booking experto
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fetchAndSaveEvents() {
-    console.log("Iniciando ciclo de búsqueda HÍBRIDO (Artistas + General + Europa)...");
+    console.log("Iniciando ciclo de búsqueda con FILTRO DE FECHA...");
     
     try {
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
@@ -54,22 +41,37 @@ async function fetchAndSaveEvents() {
                 console.log(`Buscando eventos para: "${query}"...`);
                 const result = await model.generateContent(eventPromptTemplate(query));
                 const response = await result.response;
-                const textResponse = response.text().trim();
+                let textResponse = response.text().trim();
                 
                 if (!textResponse.startsWith('[') && !textResponse.startsWith('{')) {
                   console.log(`❕ La respuesta para "${query}" no es un JSON. Omitiendo.`);
                   continue; 
                 }
 
-                const events = JSON.parse(textResponse);
+                let events = JSON.parse(textResponse);
                 
                 if (Array.isArray(events) && events.length > 0) {
-                    for (const event of events) {
-                        await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
+                    
+                    // --- ¡AQUÍ ESTÁ EL FILTRO DE FECHA ESENCIAL! ---
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0); // Pone la hora a medianoche para comparar solo días
+
+                    const futureEvents = events.filter(event => {
+                        const eventDate = new Date(event.date);
+                        return eventDate >= today;
+                    });
+                    // --- FIN DEL FILTRO ---
+
+                    if (futureEvents.length > 0) {
+                        for (const event of futureEvents) {
+                            await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
+                        }
+                        console.log(`👍 Se procesaron y guardaron ${futureEvents.length} conciertos futuros para "${query}".`);
+                    } else {
+                        console.log(`ℹ️ La IA devolvió eventos, pero todos eran pasados. No se guardó nada para "${query}".`);
                     }
-                    console.log(`👍 Se procesaron ${events.length} eventos para "${query}".`);
                 } else {
-                    console.log(`ℹ️ No se encontraron nuevos eventos para "${query}".`);
+                    console.log(`ℹ️ No se encontraron nuevos conciertos para "${query}".`);
                 }
             } catch (error) {
                 console.error(`❌ Error procesando la búsqueda para "${query}":`, error.message);
@@ -88,5 +90,5 @@ async function fetchAndSaveEvents() {
 
 cron.schedule('0 3 * * *', () => { fetchAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker EUROPEO iniciado. Ejecutando una vez para la prueba...");
+console.log("Worker con FILTRO DE FECHA iniciado. Ejecutando una vez para la prueba...");
 fetchAndSaveEvents();
