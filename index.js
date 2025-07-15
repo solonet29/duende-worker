@@ -1,132 +1,105 @@
 import 'dotenv/config';
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { MongoClient } from 'mongodb';
 import cron from 'node-cron';
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 
 // --- CONFIGURACIÓN ---
-const { GEMINI_API_KEY, MONGO_URI } = process.env;
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+const { MONGO_URI } = process.env;
 const mongoClient = new MongoClient(MONGO_URI, { autoSelectFamily: false });
 
-// 1. REINTRODUCIMOS LA ESTRATEGIA HÍBRIDA
-const ARTIST_LIST = [
-    "Eva Yerbabuena", "Marina Heredia", "Estrella Morente", "Sara Baras", "Argentina",
-    "Rocío Márquez", "María Terremoto", "Farruquito", "Pedro El Granaíno", "Miguel Poveda",
-    "Antonio Reyes", "Rancapino Chico", "Jesús Méndez", "Arcángel", "Israel Fernández"
-];
+// El objetivo de nuestro scraper
+const TARGET_URL = 'https://www.deflamenco.com/guia/de-conciertos.html';
 
-const GENERAL_QUERIES = [
-    "espectáculos de flamenco en tablaos de Madrid",
-    "programación de flamenco en teatros de Barcelona",
-    "noches de flamenco en cuevas del Sacromonte Granada",
-    "festivales de flamenco en Andalucía verano 2025",
-    "conciertos de guitarra flamenca en Jerez",
-    "espectáculo flamenco en París",
-    "conciertos de flamenco en Londres"
-];
+// Función para convertir la fecha en español (ej: "15 de julio de 2025") a formato YYYY-MM-DD
+function parseSpanishDate(dateString) {
+    const months = {
+        'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04', 'mayo': '05', 'junio': '06',
+        'julio': '07', 'agosto': '08', 'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12'
+    };
+    const parts = dateString.toLowerCase().split(' de ');
+    if (parts.length !== 3) return null;
 
-const ALL_QUERIES = [...ARTIST_LIST, ...GENERAL_QUERIES];
+    const day = parts[0].padStart(2, '0');
+    const month = months[parts[1]];
+    const year = parts[2];
+
+    if (!day || !month || !year) return null;
+
+    return `${year}-${month}-${day}`;
+}
 
 
-// 2. EL PROMPT MÁS PERSUASIVO
-const eventPromptTemplate = (query) => `Tu objetivo es rellenar una base de datos de eventos de flamenco. Analiza la siguiente consulta: "${query}". Busca en tu conocimiento cualquier evento futuro (conciertos, recitales, festivales) que se relacione con esta consulta en Europa. Luego, obligatoriamente, llama a la función 'guardar_eventos_encontrados' con TODOS los resultados que encuentres. Si no encuentras absolutamente nada, llama a la función con un array vacío [].`;
-
-// Definición de la función y su estructura
-const tools = [{
-  functionDeclarations: [{
-    name: "guardar_eventos_encontrados",
-    description: "Guarda una lista de eventos de flamenco que se han encontrado.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        eventos: {
-          type: "ARRAY",
-          description: "Un array de objetos, donde cada objeto es un evento de flamenco.",
-          items: {
-            type: "OBJECT",
-            properties: {
-              id: { type: "STRING", description: "Un identificador único para el evento, en formato slug. ej: artista-ciudad-fecha" },
-              name: { type: "STRING", description: "El nombre oficial del evento o espectáculo." },
-              artist: { type: "STRING", description: "El artista o artistas principales. Si son varios, listarlos." },
-              description: { type: "STRING", description: "Una breve descripción del evento." },
-              date: { type: "STRING", description: "La fecha del evento en formato YYYY-MM-DD." },
-              time: { type: "STRING", description: "La hora del evento en formato HH:MM." },
-              venue: { type: "STRING", description: "El nombre del lugar, teatro o festival." },
-              city: { type: "STRING", description: "La ciudad donde se realiza el evento." },
-              country: { type: "STRING", description: "El país del evento." },
-              verified: { type: "BOOLEAN", description: "Poner en 'true' si la información parece oficial, y 'false' si no." }
-            },
-            required: ["id", "name", "artist", "description", "date", "city", "country"]
-          }
-        }
-      },
-      required: ["eventos"]
-    }
-  }]
-}];
-
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-async function fetchAndSaveEvents() {
-    console.log("Iniciando ciclo de búsqueda DEFINITIVO (Híbrido + Function Calling)...");
+async function scrapeAndSaveEvents() {
+    console.log(`Iniciando scraping de: ${TARGET_URL}...`);
     
     try {
-        const model = genAI.getGenerativeModel({
-            model: "gemini-1.5-pro",
-            tools: tools,
-        });
+        // 1. DESCARGAMOS EL HTML DE LA PÁGINA
+        const response = await axios.get(TARGET_URL);
+        const html = response.data;
 
-        await mongoClient.connect();
-        console.log("✅ Conexión a MongoDB establecida.");
-        const db = mongoClient.db("DuendeDB");
-        const eventsCollection = db.collection("events");
+        // 2. CARGAMOS EL HTML EN CHEERIO PARA ANALIZARLO
+        const $ = cheerio.load(html);
+        
+        const events = [];
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
 
-        for (const query of ALL_QUERIES) {
-            try {
-                console.log(`Buscando eventos para: "${query}"...`);
-                const result = await model.generateContent(eventPromptTemplate(query));
-                const response = await result.response;
-                const functionCall = response.functionCalls?.[0];
-
-                if (functionCall && functionCall.name === "guardar_eventos_encontrados") {
-                    const events = functionCall.args.eventos || [];
+        // 3. BUSCAMOS LOS EVENTOS DENTRO DEL HTML
+        // Cada evento en la página está dentro de un 'article' con la clase 'item'
+        $('article.item').each((index, element) => {
+            // Extraemos los datos usando los selectores CSS específicos de la página
+            const name = $(element).find('h2.item-title a').text().trim();
+            const url = $(element).find('h2.item-title a').attr('href');
+            const fullDateText = $(element).find('time.item-published').text().trim();
+            const dateMatch = fullDateText.match(/(\d{1,2} de \w+ de \d{4})/);
+            
+            if (name && dateMatch) {
+                const parsedDate = parseSpanishDate(dateMatch[0]);
+                if (parsedDate && new Date(parsedDate) >= today) {
                     
-                    if (events.length > 0) {
-                        const today = new Date();
-                        today.setHours(0, 0, 0, 0);
-                        const futureEvents = events.filter(event => new Date(event.date) >= today);
-
-                        if (futureEvents.length > 0) {
-                            for (const event of futureEvents) {
-                                await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
-                            }
-                            console.log(`👍 Se procesaron y guardaron ${futureEvents.length} conciertos futuros para "${query}".`);
-                        } else {
-                            console.log(`ℹ️ La IA devolvió eventos, pero todos eran pasados para "${query}".`);
-                        }
-                    } else {
-                        console.log(`ℹ️ La IA llamó a la función con 0 eventos para "${query}".`);
-                    }
-                } else {
-                    console.log(`❕ La IA no llamó a la función para "${query}", no se encontró información.`);
+                    const locationText = $(element).find('.item-extra-fields-value').eq(0).text().trim();
+                    
+                    events.push({
+                        id: `deflamenco-${url.split('/').pop().replace('.html','')}`, // Creamos un ID único desde la URL del evento
+                        name: name,
+                        artist: "Consultar cartel", // La web no siempre separa al artista principal
+                        description: `Evento extraído de deflamenco.com. Más información en la web original. Ubicación: ${locationText}`,
+                        date: parsedDate,
+                        time: "21:00", // La web no provee la hora, usamos un placeholder
+                        venue: locationText.split(',')[0] || "Consultar web", // Intentamos obtener el lugar
+                        city: locationText.split(',')[1] || "Consultar web", // Intentamos obtener la ciudad
+                        country: "España", // Asumimos España
+                        verified: true 
+                    });
                 }
-            } catch (error) {
-                console.error(`❌ Error procesando la búsqueda para "${query}":`, error.message);
-            } finally {
-                console.log("Pausando por 2 segundos...");
-                await delay(2000); 
             }
+        });
+        
+        console.log(`👍 Se han encontrado y filtrado ${events.length} eventos futuros en la página.`);
+        
+        if (events.length > 0) {
+            await mongoClient.connect();
+            console.log("✅ Conexión a MongoDB establecida.");
+            const db = mongoClient.db("DuendeDB");
+            const eventsCollection = db.collection("events");
+
+            for (const event of events) {
+                await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
+            }
+            
+            await mongoClient.close();
+            console.log("🔌 Conexión a MongoDB cerrada. Eventos guardados.");
         }
+
     } catch (error) {
-        console.error("💥 ERROR FATAL en el worker: ", error);
-    } finally {
-        await mongoClient.close();
-        console.log("🔌 Conexión a MongoDB cerrada. Ciclo finalizado.");
+        console.error("💥 ERROR FATAL durante el scraping: ", error);
     }
 }
 
 // --- EJECUCIÓN ---
-cron.schedule('0 3 * * *', () => { fetchAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
+// Lo programamos para que se ejecute una vez al día
+cron.schedule('0 5 * * *', () => { scrapeAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker DEFINITIVO iniciado. Ejecutando una vez para la prueba...");
-fetchAndSaveEvents();
+console.log("Worker SCRAPER para deflamenco.com iniciado. Ejecutando una vez para la prueba...");
+scrapeAndSaveEvents();
