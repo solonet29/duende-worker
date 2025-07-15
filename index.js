@@ -14,12 +14,15 @@ const BASE_URL = 'https://www.deflamenco.com';
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function parseSpanishDate(dateString) {
+    if (!dateString) return null;
     const months = { 'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04', 'mayo': '05', 'junio': '06', 'julio': '07', 'agosto': '08', 'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12' };
-    const parts = dateString.toLowerCase().replace(/,/, '').split(' ');
-    if (parts.length < 3) return null;
-    const day = parts[0].padStart(2, '0');
-    const month = months[parts[2]];
-    const year = parts[4];
+    const dateParts = dateString.toLowerCase().match(/(\d{1,2}) de (\w+) de (\d{4})/);
+    if (!dateParts) return null;
+    
+    const day = dateParts[1].padStart(2, '0');
+    const month = months[dateParts[2]];
+    const year = dateParts[3];
+    
     if (!day || !month || !year) return null;
     return `${year}-${month}-${day}`;
 }
@@ -34,10 +37,9 @@ async function scrapeAndSaveEvents() {
         const $ = cheerio.load(response.data);
         
         const eventLinks = [];
-        
-        // --- ¡AQUÍ ESTÁ LA CORRECCIÓN! ---
-        // El selector correcto para encontrar los enlaces es 'div.col-xs-12 h3 a'.
-        $('div.col-xs-12 h3 a').each((index, element) => {
+        // --- ¡AQUÍ ESTÁ LA CORRECCIÓN CLAVE! ---
+        // El selector correcto para encontrar los enlaces es 'h2.item-title a'.
+        $('h2.item-title a').each((index, element) => {
             const url = $(element).attr('href');
             if (url) {
                 eventLinks.push(BASE_URL + url);
@@ -65,7 +67,7 @@ async function scrapeAndSaveEvents() {
                 const $detail = cheerio.load(detailResponse.data);
 
                 const name = $detail('h1.item-title').text().trim();
-                const dateString = $detail('time[itemprop="startDate"]').attr('datetime');
+                const dateString = $detail('time[itemprop="startDate"]').attr('datetime'); // Formato YYYY-MM-DD
                 
                 if (name && dateString && new Date(dateString) >= today) {
                     const artist = $detail('div[itemprop="performer"] a').text().trim() || "Consultar cartel";
@@ -95,7 +97,8 @@ async function scrapeAndSaveEvents() {
     } catch (error) {
         console.error("💥 ERROR FATAL en el worker: ", error);
     } finally {
-        if (mongoClient) {
+        // Aseguramos que mongoClient exista antes de intentar cerrar la conexión
+        if (mongoClient && mongoClient.topology && mongoClient.topology.isConnected()) {
             await mongoClient.close();
             console.log("🔌 Conexión a MongoDB cerrada. Ciclo finalizado.");
         }
@@ -104,5 +107,5 @@ async function scrapeAndSaveEvents() {
 
 cron.schedule('0 5 * * *', () => { scrapeAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker SCRAPER (Selector Corregido) iniciado. Ejecutando una vez para la prueba...");
+console.log("Worker SCRAPER (Selector FINAL) iniciado. Ejecutando una vez para la prueba...");
 scrapeAndSaveEvents();
