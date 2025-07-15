@@ -8,8 +8,8 @@ import * as cheerio from 'cheerio';
 const { MONGO_URI } = process.env;
 const mongoClient = new MongoClient(MONGO_URI, { autoSelectFamily: false });
 
-// El objetivo de nuestro scraper
-const TARGET_URL = 'https://www.deflamenco.com/guia/de-conciertos.html';
+// ¡AQUÍ ESTÁ LA CORRECCIÓN! APUNTAMOS A LA URL CORRECTA.
+const TARGET_URL = 'https://www.deflamenco.com/agenda-de-flamenco.html';
 
 // Función para convertir la fecha en español (ej: "15 de julio de 2025") a formato YYYY-MM-DD
 function parseSpanishDate(dateString) {
@@ -19,57 +19,46 @@ function parseSpanishDate(dateString) {
     };
     const parts = dateString.toLowerCase().split(' de ');
     if (parts.length !== 3) return null;
-
     const day = parts[0].padStart(2, '0');
     const month = months[parts[1]];
     const year = parts[2];
-
     if (!day || !month || !year) return null;
-
     return `${year}-${month}-${day}`;
 }
 
-
 async function scrapeAndSaveEvents() {
-    console.log(`Iniciando scraping de: ${TARGET_URL}...`);
+    console.log(`Iniciando scraping de la URL CORRECTA: ${TARGET_URL}...`);
     
     try {
-        // 1. DESCARGAMOS EL HTML DE LA PÁGINA
         const response = await axios.get(TARGET_URL);
         const html = response.data;
-
-        // 2. CARGAMOS EL HTML EN CHEERIO PARA ANALIZARLO
         const $ = cheerio.load(html);
         
         const events = [];
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        // 3. BUSCAMOS LOS EVENTOS DENTRO DEL HTML
-        // Cada evento en la página está dentro de un 'article' con la clase 'item'
         $('article.item').each((index, element) => {
-            // Extraemos los datos usando los selectores CSS específicos de la página
             const name = $(element).find('h2.item-title a').text().trim();
             const url = $(element).find('h2.item-title a').attr('href');
-            const fullDateText = $(element).find('time.item-published').text().trim();
-            const dateMatch = fullDateText.match(/(\d{1,2} de \w+ de \d{4})/);
-            
-            if (name && dateMatch) {
+            // La fecha en esta nueva página está dentro del título del enlace
+            const dateMatch = name.match(/(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i) || $(element).find('time.item-published').text().trim().match(/(\d{1,2} de \w+ de \d{4})/);
+
+            if (name && url && dateMatch) {
                 const parsedDate = parseSpanishDate(dateMatch[0]);
                 if (parsedDate && new Date(parsedDate) >= today) {
-                    
                     const locationText = $(element).find('.item-extra-fields-value').eq(0).text().trim();
                     
                     events.push({
-                        id: `deflamenco-${url.split('/').pop().replace('.html','')}`, // Creamos un ID único desde la URL del evento
+                        id: `deflamenco-${url.split('/').pop().replace('.html','')}`,
                         name: name,
-                        artist: "Consultar cartel", // La web no siempre separa al artista principal
-                        description: `Evento extraído de deflamenco.com. Más información en la web original. Ubicación: ${locationText}`,
+                        artist: "Consultar cartel",
+                        description: `Evento extraído de deflamenco.com. Ubicación: ${locationText}`,
                         date: parsedDate,
-                        time: "21:00", // La web no provee la hora, usamos un placeholder
-                        venue: locationText.split(',')[0] || "Consultar web", // Intentamos obtener el lugar
-                        city: locationText.split(',')[1] || "Consultar web", // Intentamos obtener la ciudad
-                        country: "España", // Asumimos España
+                        time: "21:00",
+                        venue: locationText.split(',')[0] || "Consultar web",
+                        city: locationText.split(',')[1] || "Consultar web",
+                        country: "España",
                         verified: true 
                     });
                 }
@@ -93,13 +82,17 @@ async function scrapeAndSaveEvents() {
         }
 
     } catch (error) {
-        console.error("💥 ERROR FATAL durante el scraping: ", error);
+        // Añadimos un log más detallado del error de axios si ocurre
+        if (error.response) {
+            console.error(`💥 ERROR de Red al acceder a la URL: Status ${error.response.status}`);
+        } else {
+            console.error("💥 ERROR FATAL durante el scraping: ", error);
+        }
     }
 }
 
 // --- EJECUCIÓN ---
-// Lo programamos para que se ejecute una vez al día
 cron.schedule('0 5 * * *', () => { scrapeAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker SCRAPER para deflamenco.com iniciado. Ejecutando una vez para la prueba...");
+console.log("Worker SCRAPER (URL corregida) iniciado. Ejecutando una vez para la prueba...");
 scrapeAndSaveEvents();
