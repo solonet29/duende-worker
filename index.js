@@ -14,74 +14,98 @@ const ARTIST_LIST = [
     "Antonio Reyes", "Rancapino Chico", "Jesús Méndez", "Arcángel", "Israel Fernández"
 ];
 
-// 1. LISTA DE BÚSQUEDAS GENERALES AMPLIADA
-// Hemos añadido más tipos de eventos y lugares para "echar una red más grande".
-const GENERAL_QUERIES = [
-    "espectáculos de flamenco en tablaos de Madrid",
-    "programación de flamenco en teatros de Barcelona",
-    "noches de flamenco en cuevas del Sacromonte Granada",
-    "festivales de flamenco en Andalucía verano 2025",
-    "conciertos de guitarra flamenca en Jerez",
-    "espectáculo flamenco en París",
-    "conciertos de flamenco en Londres",
-    "peñas flamencas en Sevilla",
-    "ciclos de flamenco en Córdoba",
-    "zambombas flamencas en Navidad Jerez"
-];
+// 1. DEFINIMOS LA ESTRUCTURA DE DATOS EXACTA QUE QUEREMOS
+// Esto es como un contrato que la IA está obligada a cumplir.
+const eventSchema = {
+  type: "OBJECT",
+  properties: {
+    id: { type: "STRING", description: "Un identificador único para el evento, en formato slug. ej: artista-ciudad-fecha" },
+    name: { type: "STRING", description: "El nombre oficial del evento o espectáculo." },
+    artist: { type: "STRING", description: "El artista o artistas principales. Si son varios, listarlos." },
+    description: { type: "STRING", description: "Una breve descripción del evento." },
+    date: { type: "STRING", description: "La fecha del evento en formato YYYY-MM-DD." },
+    time: { type: "STRING", description: "La hora del evento en formato HH:MM." },
+    venue: { type: "STRING", description: "El nombre del lugar, teatro o festival." },
+    city: { type: "STRING", description: "La ciudad donde se realiza el evento." },
+    country: { type: "STRING", description: "El país del evento." },
+    verified: { type: "BOOLEAN", description: "Poner en 'true' si la información parece oficial, y 'false' si no." }
+  },
+  required: ["id", "name", "artist", "description", "date", "city", "country"]
+};
 
-const ALL_QUERIES = [...ARTIST_LIST, ...GENERAL_QUERIES];
+// 2. CREAMOS LA "HERRAMIENTA" QUE LA IA DEBE USAR
+const tools = [{
+  functionDeclarations: [{
+    name: "guardar_eventos_encontrados",
+    description: "Guarda una lista de eventos de flamenco que se han encontrado.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        eventos: {
+          type: "ARRAY",
+          description: "Un array de objetos, donde cada objeto es un evento de flamenco.",
+          items: eventSchema
+        }
+      },
+      required: ["eventos"]
+    }
+  }]
+}];
 
-// 2. NUEVO PROMPT MENOS RESTRICTIVO Y MÁS AMPLIO
-// Le pedimos que incluya todo tipo de eventos y que si no está seguro, lo marque como no verificado.
-const eventPromptTemplate = (query) => `Actúa como un investigador exhaustivo de la escena flamenca. Tu única tarea es buscar CUALQUIER tipo de evento de flamenco futuro (próximos 12 meses) sobre el siguiente tema o artista: "${query}" en Europa. Esto incluye grandes conciertos, actuaciones en tablaos, recitales en peñas y festivales. Si la información parece plausible pero no está 100% confirmada, inclúyela de todas formas y pon el campo "verified" en false. Tu respuesta debe ser obligatoriamente un array en formato JSON. Si no encuentras absolutamente nada, devuelve un array JSON vacío: []. No incluyas texto o explicaciones. La estructura para cada evento es: { "id": "slug-unico", "name": "...", "artist": "Artista/s principal/es o 'Varios Artistas'", "description": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "...", "city": "...", "country": "...", "verified": boolean }`;
+const eventPromptTemplate = (artistName) => `Busca todos los eventos y conciertos futuros del artista de flamenco "${artistName}" en Europa. Recopila toda la información que encuentres. Si no encuentras ningún evento, no llames a la función.`;
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fetchAndSaveEvents() {
-    console.log("Iniciando ciclo de búsqueda AMPLIA...");
+    console.log("Iniciando ciclo de búsqueda con FUNCTION CALLING...");
     
     try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+        const model = genAI.getGenerativeModel({
+            model: "gemini-1.5-pro",
+            tools: tools,
+        });
+
         await mongoClient.connect();
         console.log("✅ Conexión a MongoDB establecida.");
         const db = mongoClient.db("DuendeDB");
         const eventsCollection = db.collection("events");
 
-        for (const query of ALL_QUERIES) {
+        for (const artist of ARTIST_LIST) {
             try {
-                console.log(`Buscando eventos para: "${query}"...`);
-                const result = await model.generateContent(eventPromptTemplate(query));
+                console.log(`Buscando conciertos para: "${artist}"...`);
+                const result = await model.generateContent(eventPromptTemplate(artist));
                 const response = await result.response;
-                let textResponse = response.text().trim();
                 
-                if (!textResponse.startsWith('[') && !textResponse.startsWith('{')) {
-                  console.log(`❕ La respuesta para "${query}" no es un JSON. Omitiendo.`);
-                  continue; 
-                }
+                // 3. EXTRAEMOS LOS DATOS DE LA LLAMADA A LA FUNCIÓN
+                const functionCall = response.functionCalls?.[0];
 
-                let events = JSON.parse(textResponse);
-                
-                if (Array.isArray(events) && events.length > 0) {
-                    const today = new Date();
-                    today.setHours(0, 0, 0, 0); 
-                    const futureEvents = events.filter(event => new Date(event.date) >= today);
+                if (functionCall && functionCall.name === "guardar_eventos_encontrados") {
+                    const events = functionCall.args.eventos || [];
+                    
+                    if (events.length > 0) {
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        const futureEvents = events.filter(event => new Date(event.date) >= today);
 
-                    if (futureEvents.length > 0) {
-                        for (const event of futureEvents) {
-                            await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
+                        if (futureEvents.length > 0) {
+                            for (const event of futureEvents) {
+                                await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
+                            }
+                            console.log(`👍 Se procesaron y guardaron ${futureEvents.length} conciertos futuros para "${artist}".`);
+                        } else {
+                            console.log(`ℹ️ La IA devolvió eventos, pero todos eran pasados para "${artist}".`);
                         }
-                        console.log(`👍 Se procesaron y guardaron ${futureEvents.length} conciertos futuros para "${query}".`);
                     } else {
-                        console.log(`ℹ️ La IA devolvió eventos, pero todos eran pasados para "${query}".`);
+                        console.log(`ℹ️ La IA llamó a la función pero sin eventos para "${artist}".`);
                     }
                 } else {
-                    console.log(`ℹ️ No se encontraron nuevos conciertos para "${query}".`);
+                    console.log(`ℹ️ La IA no encontró información o no llamó a la función para "${artist}".`);
                 }
             } catch (error) {
-                console.error(`❌ Error procesando la búsqueda para "${query}":`, error.message);
+                console.error(`❌ Error procesando la búsqueda para "${artist}":`, error.message);
             } finally {
                 console.log("Pausando por 2 segundos...");
-                await delay(2000); // Ya que estamos en plan de pago, bajamos la pausa a 2s
+                await delay(2000); 
             }
         }
     } catch (error) {
@@ -92,7 +116,8 @@ async function fetchAndSaveEvents() {
     }
 }
 
+// --- EJECUCIÓN ---
 cron.schedule('0 3 * * *', () => { fetchAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker 'Radar Flamenco' iniciado. Ejecutando una vez para la prueba...");
+console.log("Worker con FUNCTION CALLING iniciado. Ejecutando una vez para la prueba...");
 fetchAndSaveEvents();
