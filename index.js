@@ -16,13 +16,13 @@ const ARTIST_LIST = [
 const GENERAL_QUERIES = [
     "espectáculos flamencos Madrid",
     "agenda flamenca Barcelona",
-    "festivales de flamenco Andalucía 2025",
+    "festivales de flamenco Andalucía",
     "conciertos flamencos París"
 ];
 
 const ALL_QUERIES = [...ARTIST_LIST, ...GENERAL_QUERIES];
 
-// --- ESTRUCTURA DE DATOS PARA LA IA (FUNCTION CALLING) ---
+// Definimos la estructura de datos que la IA debe devolver
 const tools = [{
   functionDeclarations: [{
     name: "guardar_eventos_encontrados",
@@ -39,7 +39,7 @@ const tools = [{
               id: { type: "STRING" }, name: { type: "STRING" }, artist: { type: "STRING" },
               description: { type: "STRING" }, date: { type: "STRING", description: "La fecha en formato YYYY-MM-DD." },
               time: { type: "STRING" }, venue: { type: "STRING" }, city: { type: "STRING" },
-              country: { type: "STRING" }, verified: { type: "BOOLEAN", description: "True si la fuente es fiable (un teatro, un vendedor de entradas), false si es un blog o foro." }
+              country: { type: "STRING" }, verified: { type: "BOOLEAN" }
             },
             required: ["id", "name", "artist", "date", "city"]
           }
@@ -50,21 +50,19 @@ const tools = [{
   }]
 }];
 
-// --- PROMPT MEJORADO QUE INVITA A USAR LAS HERRAMIENTAS ---
-const eventPromptTemplate = (query) => `Tu misión es encontrar eventos de flamenco reales y futuros. Usa la herramienta de búsqueda de Google para encontrar páginas web relevantes sobre la consulta: "${query}". Analiza las páginas más fiables (teatros, webs de artistas, vendedores de entradas) y extrae todos los eventos que encuentres. Llama a la función 'guardar_eventos_encontrados' con los datos. Si tras buscar no encuentras nada, llama a la función con un array vacío.`;
+
+// --- ¡AQUÍ ESTÁ TU MEJORA! ---
+// Cambiamos el marco de tiempo de "próximos 12 meses" a "próximos 10 días".
+const eventPromptTemplate = (query) => `Tu objetivo es rellenar una base de datos de eventos de flamenco. Analiza la siguiente consulta: "${query}". Busca en tu conocimiento cualquier evento futuro que tenga lugar en los próximos 10 días en Europa. Luego, obligatoriamente, llama a la función 'guardar_eventos_encontrados' con TODOS los resultados que encuentres. Si no encuentras absolutamente nada, llama a la función con un array vacío [].`;
+
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fetchAndSaveEvents() {
-    console.log("Iniciando ciclo de búsqueda HÍBRIDO (Google Search + IA)...");
+    console.log("Iniciando ciclo de búsqueda para los PRÓXIMOS 10 DÍAS...");
     
     try {
-        // 1. INICIALIZAMOS EL MODELO CON ACCESO A HERRAMIENTAS
-        const model = genAI.getGenerativeModel({
-            model: "gemini-1.5-pro",
-            tools: tools, // Le pasamos la definición de nuestra función
-        });
-
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro", tools: tools });
         await mongoClient.connect();
         const db = mongoClient.db("DuendeDB");
         const eventsCollection = db.collection("events");
@@ -73,7 +71,7 @@ async function fetchAndSaveEvents() {
 
         for (const query of ALL_QUERIES) {
             try {
-                console.log(`Buscando en Google y analizando para: "${query}"...`);
+                console.log(`Buscando eventos para: "${query}"...`);
                 const result = await model.generateContent(eventPromptTemplate(query));
                 const response = await result.response;
                 const functionCall = response.functionCalls?.[0];
@@ -90,10 +88,10 @@ async function fetchAndSaveEvents() {
                             }
                             console.log(`👍 Se procesaron y guardaron ${futureEvents.length} conciertos futuros para "${query}".`);
                         } else {
-                            console.log(`ℹ️ La IA encontró eventos, pero todos eran pasados para "${query}".`);
+                            console.log(`ℹ️ La IA devolvió eventos, pero todos eran pasados para "${query}".`);
                         }
                     } else {
-                        console.log(`ℹ️ La IA buscó y no encontró nuevos conciertos para "${query}".`);
+                        console.log(`ℹ️ La IA llamó a la función con 0 eventos para "${query}".`);
                     }
                 } else {
                     console.log(`❕ La IA no encontró información verificable para llamar a la función para "${query}".`);
@@ -101,8 +99,8 @@ async function fetchAndSaveEvents() {
             } catch (error) {
                 console.error(`❌ Error procesando la búsqueda para "${query}":`, error.message);
             } finally {
-                console.log("Pausando por 10 segundos...");
-                await delay(10000); // Pausa de 10 segundos entre cada gran búsqueda
+                console.log("Pausando por 2 segundos...");
+                await delay(2000); 
             }
         }
     } catch (error) {
@@ -115,7 +113,7 @@ async function fetchAndSaveEvents() {
     }
 }
 
-cron.schedule('0 4 * * *', () => { fetchAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
+cron.schedule('0 3 * * *', () => { fetchAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker HÍBRIDO DEFINITIVO iniciado. Ejecutando una vez para la prueba...");
+console.log("Worker (Próximos 10 días) iniciado. Ejecutando una vez para la prueba...");
 fetchAndSaveEvents();
