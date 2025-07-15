@@ -8,91 +8,97 @@ import * as cheerio from 'cheerio';
 const { MONGO_URI } = process.env;
 const mongoClient = new MongoClient(MONGO_URI, { autoSelectFamily: false });
 
-// ¡AQUÍ ESTÁ LA CORRECCIÓN! APUNTAMOS A LA URL CORRECTA.
-const TARGET_URL = 'https://www.deflamenco.com/agenda-de-flamenco.html';
+const AGENDA_URL = 'https://www.deflamenco.com/agenda-de-flamenco.html';
+const BASE_URL = 'https://www.deflamenco.com';
 
-// Función para convertir la fecha en español (ej: "15 de julio de 2025") a formato YYYY-MM-DD
-function parseSpanishDate(dateString) {
-    const months = {
-        'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04', 'mayo': '05', 'junio': '06',
-        'julio': '07', 'agosto': '08', 'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12'
-    };
-    const parts = dateString.toLowerCase().split(' de ');
-    if (parts.length !== 3) return null;
-    const day = parts[0].padStart(2, '0');
-    const month = months[parts[1]];
-    const year = parts[2];
-    if (!day || !month || !year) return null;
-    return `${year}-${month}-${day}`;
-}
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function scrapeAndSaveEvents() {
-    console.log(`Iniciando scraping de la URL CORRECTA: ${TARGET_URL}...`);
+    console.log(`Iniciando scraping de 2 FASES desde: ${AGENDA_URL}...`);
     
     try {
-        const response = await axios.get(TARGET_URL);
-        const html = response.data;
-        const $ = cheerio.load(html);
+        // --- FASE 1: OBTENER LOS ENLACES DE LOS EVENTOS ---
+        console.log("FASE 1: Obteniendo lista de enlaces de eventos...");
+        const response = await axios.get(AGENDA_URL);
+        const $ = cheerio.load(response.data);
         
-        const events = [];
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        $('article.item').each((index, element) => {
-            const name = $(element).find('h2.item-title a').text().trim();
-            const url = $(element).find('h2.item-title a').attr('href');
-            // La fecha en esta nueva página está dentro del título del enlace
-            const dateMatch = name.match(/(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i) || $(element).find('time.item-published').text().trim().match(/(\d{1,2} de \w+ de \d{4})/);
-
-            if (name && url && dateMatch) {
-                const parsedDate = parseSpanishDate(dateMatch[0]);
-                if (parsedDate && new Date(parsedDate) >= today) {
-                    const locationText = $(element).find('.item-extra-fields-value').eq(0).text().trim();
-                    
-                    events.push({
-                        id: `deflamenco-${url.split('/').pop().replace('.html','')}`,
-                        name: name,
-                        artist: "Consultar cartel",
-                        description: `Evento extraído de deflamenco.com. Ubicación: ${locationText}`,
-                        date: parsedDate,
-                        time: "21:00",
-                        venue: locationText.split(',')[0] || "Consultar web",
-                        city: locationText.split(',')[1] || "Consultar web",
-                        country: "España",
-                        verified: true 
-                    });
-                }
+        const eventLinks = [];
+        $('article.item h2.item-title a').each((index, element) => {
+            const url = $(element).attr('href');
+            if (url) {
+                eventLinks.push(BASE_URL + url);
             }
         });
         
-        console.log(`👍 Se han encontrado y filtrado ${events.length} eventos futuros en la página.`);
-        
-        if (events.length > 0) {
-            await mongoClient.connect();
-            console.log("✅ Conexión a MongoDB establecida.");
-            const db = mongoClient.db("DuendeDB");
-            const eventsCollection = db.collection("events");
+        console.log(`Se encontraron ${eventLinks.length} enlaces a eventos. Iniciando Fase 2...`);
+        if (eventLinks.length === 0) {
+            console.log("No se encontraron enlaces, finalizando ciclo.");
+            return;
+        }
 
-            for (const event of events) {
-                await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
+        // --- FASE 2: VISITAR CADA ENLACE Y EXTRAER LOS DETALLES ---
+        await mongoClient.connect();
+        console.log("✅ Conexión a MongoDB establecida para procesar detalles.");
+        const db = mongoClient.db("DuendeDB");
+        const eventsCollection = db.collection("events");
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        for (const link of eventLinks) {
+            try {
+                console.log(`\nProcesando subpágina: ${link}`);
+                const detailResponse = await axios.get(link);
+                const $detail = cheerio.load(detailResponse.data);
+
+                // Selectores para la página de detalle del evento
+                const name = $detail('h1.item-title').text().trim();
+                const dateString = $detail('time[itemprop="startDate"]').attr('datetime'); // Formato YYYY-MM-DD
+                const eventDate = new Date(dateString);
+
+                if (name && dateString && eventDate >= today) {
+                    const artist = $detail('div[itemprop="performer"] a').text().trim() || "Consultar cartel";
+                    const venue = $detail('div[itemprop="location"] span[itemprop="name"]').text().trim();
+                    const city = $detail('div[itemprop="location"] span[itemprop="addressLocality"]').text().trim();
+                    const country = "España"; // Asumimos España
+                    const description = $detail('div[itemprop="description"]').text().trim().substring(0, 400) + '...';
+                    const time = $detail('meta[itemprop="doorTime"]').attr('content') || "21:00";
+                    
+                    const eventData = {
+                        id: `deflamenco-${link.split('/').pop().replace('.html','')}`,
+                        name: name,
+                        artist: artist,
+                        description: description,
+                        date: dateString,
+                        time: time,
+                        venue: venue,
+                        city: city,
+                        country: country,
+                        verified: true
+                    };
+                    
+                    await eventsCollection.updateOne({ id: eventData.id }, { $set: eventData }, { upsert: true });
+                    console.log(`👍 Evento guardado: "${name}"`);
+                } else {
+                    console.log(`ℹ️ Evento omitido (pasado o sin datos suficientes): "${name}"`);
+                }
+
+            } catch (pageError) {
+                console.error(`❌ Error procesando la subpágina ${link}:`, pageError.message);
             }
-            
-            await mongoClient.close();
-            console.log("🔌 Conexión a MongoDB cerrada. Eventos guardados.");
+            console.log("Pausando 2 segundos entre cada subpágina...");
+            await delay(2000);
         }
 
     } catch (error) {
-        // Añadimos un log más detallado del error de axios si ocurre
-        if (error.response) {
-            console.error(`💥 ERROR de Red al acceder a la URL: Status ${error.response.status}`);
-        } else {
-            console.error("💥 ERROR FATAL durante el scraping: ", error);
-        }
+        console.error("💥 ERROR FATAL en el worker: ", error);
+    } finally {
+        await mongoClient.close();
+        console.log("🔌 Conexión a MongoDB cerrada. Ciclo finalizado.");
     }
 }
 
 // --- EJECUCIÓN ---
 cron.schedule('0 5 * * *', () => { scrapeAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker SCRAPER (URL corregida) iniciado. Ejecutando una vez para la prueba...");
+console.log("Worker SCRAPER de 2 FASES iniciado. Ejecutando una vez para la prueba...");
 scrapeAndSaveEvents();
