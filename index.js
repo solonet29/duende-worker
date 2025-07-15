@@ -10,56 +10,37 @@ const mongoClient = new MongoClient(MONGO_URI, { autoSelectFamily: false });
 
 const ARTIST_LIST = [
     "Eva Yerbabuena", "Marina Heredia", "Estrella Morente", "Sara Baras", "Argentina",
-    "Rocío Márquez", "María Terremoto", "Farruquito", "Pedro El Granaíno", "Miguel Poveda"
+    "Rocío Márquez", "María Terremoto", "Farruquito", "Pedro El Granaíno", "Miguel Poveda",
+    "Antonio Reyes", "Rancapino Chico", "Jesús Méndez", "Arcángel", "Israel Fernández"
 ];
 
 const GENERAL_QUERIES = [
-    "espectáculos de flamenco en tablaos de Madrid",
-    "programación de flamenco en teatros de Barcelona",
-    "noches de flamenco en cuevas del Sacromonte Granada",
-    "espectáculo flamenco en París",
-    "conciertos de flamenco en Londres"
+    "espectáculos de flamenco en tablaos de Madrid", "programación de flamenco en teatros de Barcelona",
+    "noches de flamenco en cuevas del Sacromonte Granada", "festivales de flamenco en Andalucía verano 2025",
+    "conciertos de guitarra flamenca en Jerez", "espectáculo flamenco en París", "conciertos de flamenco en Londres"
 ];
 
 const ALL_QUERIES = [...ARTIST_LIST, ...GENERAL_QUERIES];
 
-// Definimos la estructura de datos que la IA debe devolver
-const tools = [{
-  functionDeclarations: [{
-    name: "guardar_eventos_encontrados",
-    description: "Guarda una lista de eventos de flamenco que se han encontrado.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        eventos: {
-          type: "ARRAY",
-          description: "Un array de objetos, donde cada objeto es un evento de flamenco.",
-          items: {
-            type: "OBJECT",
-            properties: {
-              id: { type: "STRING" }, name: { type: "STRING" }, artist: { type: "STRING" },
-              description: { type: "STRING" }, date: { type: "STRING", description: "La fecha en formato YYYY-MM-DD." },
-              time: { type: "STRING" }, venue: { type: "STRING" }, city: { type: "STRING" },
-              country: { type: "STRING" }, verified: { type: "BOOLEAN" }
-            },
-            required: ["id", "name", "artist", "date", "city", "country"]
-          }
-        }
-      },
-      required: ["eventos"]
-    }
-  }]
-}];
+// --- ¡AQUÍ ESTÁ LA MEJORA! PROMPT MÁS FLEXIBLE ---
+const eventPromptTemplate = (query) => `Actúa como un documentalista de flamenco. Tu misión es encontrar la mayor cantidad posible de eventos futuros (próximos 12 meses) relacionados con la consulta: "${query}". Incluye conciertos, recitales, actuaciones en tablaos y festivales en Europa.
+Tu respuesta debe ser SIEMPRE un array en formato JSON.
+INSTRUCCIONES IMPORTANTES:
+1.  Si no tienes un dato exacto, indícalo. Por ejemplo, si no sabes la hora, pon "Consultar web". Si no sabes el artista, pon "Varios Artistas".
+2.  Lo más importante es que intentes devolver eventos aunque los datos no sean perfectos. Es preferible un evento con datos parciales a no devolver nada.
+3.  Si después de tu mejor esfuerzo no encuentras NADA, devuelve un array JSON vacío: [].
+La estructura para cada evento es: { "id": "slug-unico", "name": "...", "artist": "...", "description": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "...", "city": "...", "country": "...", "verified": boolean }`;
 
-const eventPromptTemplate = (query) => `Tu objetivo es rellenar una base de datos de eventos de flamenco. Analiza la siguiente consulta: "${query}". Busca en tu conocimiento cualquier evento futuro (conciertos, recitales, festivales) que se relacione con esta consulta en Europa. Luego, obligatoriamente, llama a la función 'guardar_eventos_encontrados' con TODOS los resultados que encuentres. Si no encuentras absolutamente nada, llama a la función con un array vacío [].`;
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fetchAndSaveEvents() {
-    console.log("Iniciando ciclo de búsqueda con IA (con Filtro de Fecha)...");
+    console.log("Iniciando ciclo de búsqueda con IA FLEXIBLE...");
     
     try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro", tools: tools });
+        // Volvemos a un modelo más simple, sin "tools", solo con el prompt.
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+
         await mongoClient.connect();
         console.log("✅ Conexión a MongoDB establecida.");
         const db = mongoClient.db("DuendeDB");
@@ -70,31 +51,31 @@ async function fetchAndSaveEvents() {
                 console.log(`Buscando eventos para: "${query}"...`);
                 const result = await model.generateContent(eventPromptTemplate(query));
                 const response = await result.response;
-                const functionCall = response.functionCalls?.[0];
+                let textResponse = response.text().trim();
+                
+                // Mantenemos la salvaguarda por si la IA devuelve texto plano
+                if (!textResponse.startsWith('[') && !textResponse.startsWith('{')) {
+                  console.log(`❕ La respuesta para "${query}" no es un JSON. Omitiendo. Respuesta: "${textResponse}"`);
+                  continue; 
+                }
 
-                if (functionCall && functionCall.name === "guardar_eventos_encontrados") {
-                    const events = functionCall.args.eventos || [];
-                    
-                    if (events.length > 0) {
-                        // --- ¡AQUÍ ESTÁ EL FILTRO DE FECHA QUE PEDÍAS! ---
-                        const today = new Date();
-                        today.setHours(0, 0, 0, 0);
-                        const futureEvents = events.filter(event => new Date(event.date) >= today);
-                        // --- FIN DEL FILTRO ---
+                let events = JSON.parse(textResponse);
+                
+                if (Array.isArray(events) && events.length > 0) {
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0); 
+                    const futureEvents = events.filter(event => new Date(event.date) >= today);
 
-                        if (futureEvents.length > 0) {
-                            for (const event of futureEvents) {
-                                await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
-                            }
-                            console.log(`👍 Se procesaron y guardaron ${futureEvents.length} conciertos futuros para "${query}".`);
-                        } else {
-                            console.log(`ℹ️ La IA devolvió eventos, pero todos eran pasados para "${query}".`);
+                    if (futureEvents.length > 0) {
+                        for (const event of futureEvents) {
+                            await eventsCollection.updateOne({ id: event.id }, { $set: event }, { upsert: true });
                         }
+                        console.log(`👍 Se procesaron y guardaron ${futureEvents.length} conciertos futuros para "${query}".`);
                     } else {
-                        console.log(`ℹ️ La IA llamó a la función con 0 eventos para "${query}".`);
+                        console.log(`ℹ️ La IA devolvió eventos, pero todos eran pasados para "${query}".`);
                     }
                 } else {
-                    console.log(`❕ La IA no llamó a la función para "${query}", no se encontró información.`);
+                    console.log(`ℹ️ No se encontraron nuevos conciertos para "${query}".`);
                 }
             } catch (error) {
                 console.error(`❌ Error procesando la búsqueda para "${query}":`, error.message);
@@ -115,5 +96,5 @@ async function fetchAndSaveEvents() {
 
 cron.schedule('0 3 * * *', () => { fetchAndSaveEvents(); }, { scheduled: true, timezone: "Europe/Madrid" });
 
-console.log("Worker con IA (Filtro de fecha) iniciado. Ejecutando una vez para la prueba...");
+console.log("Worker con IA FLEXIBLE iniciado. Ejecutando una vez para la prueba...");
 fetchAndSaveEvents();
